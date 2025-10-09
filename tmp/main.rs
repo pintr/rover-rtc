@@ -1,5 +1,4 @@
-pub mod model;
-pub mod peer;
+pub mod client;
 pub mod server;
 
 use std::env;
@@ -13,11 +12,10 @@ fn main() {
         match args[1].as_str() {
             "server" => {
                 println!("Starting signalling server...");
-                server::main();
             }
             "client" => {
-                println!("Starting WebRTC peer...");
-                peer::main();
+                println!("Starting WebRTC client...");
+                client::main();
             }
             _ => {
                 print_usage();
@@ -31,6 +29,6 @@ fn main() {
 fn print_usage() {
     println!("Rover RTC");
     println!("Usage:");
-    println!("  cargo run server  - Start the WebRTC server");
+    println!("  cargo run server  - Start the signalling server");
     println!("  cargo run client  - Start the WebRTC client");
 }

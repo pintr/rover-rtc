@@ -919,6 +919,7 @@ name = "rover-rtc"
 version = "0.1.0"
 dependencies = [
  "rouille",
+ "serde_json",
  "str0m",
  "systemstat",
  "tracing",
