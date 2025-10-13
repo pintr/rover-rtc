@@ -12,7 +12,7 @@ fn main() {
     if args.len() > 1 {
         match args[1].as_str() {
             "server" => {
-                println!("Starting signalling server...");
+                println!("Starting server...");
                 server::main();
             }
             "client" => {

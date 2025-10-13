@@ -23,7 +23,7 @@ pub struct Client {
     pub rtc: Rtc,
     pending: Option<SdpPendingOffer>,
     cid: Option<ChannelId>,
-    tracks_in: Vec<TrackInEntry>,
+    pub tracks_in: Vec<TrackInEntry>,
     tracks_out: Vec<TrackOut>,
     chosen_rid: Option<Rid>,
 }
@@ -54,11 +54,11 @@ impl Client {
         }
     }
 
-    fn accepts(&self, input: &Input) -> bool {
+    pub fn accepts(&self, input: &Input) -> bool {
         self.rtc.accepts(input)
     }
 
-    fn handle_input(&mut self, input: Input) {
+    pub fn handle_input(&mut self, input: Input) {
         if !self.rtc.is_alive() {
             return;
         }
