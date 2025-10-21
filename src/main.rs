@@ -3,7 +3,6 @@ pub mod peer;
 pub mod server;
 
 use std::env;
-use tokio::runtime::Runtime;
 
 mod util;
 
@@ -18,8 +17,10 @@ fn main() {
             }
             "peer" => {
                 println!("Starting WebRTC peer...");
-                let rt = Runtime::new().unwrap();
-                rt.block_on(peer::main()).unwrap();
+                match peer::main() {
+                    Ok(_) => println!("Peer completed successfully"),
+                    Err(e) => println!("Peer error:\n{}", e),
+                }
             }
             _ => {
                 print_usage();

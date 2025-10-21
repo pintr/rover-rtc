@@ -99,39 +99,73 @@ impl Client {
                 Propagated::Noop
             }
             Output::Timeout(t) => Propagated::Timeout(t),
-            Output::Event(e) => match e {
-                Event::IceConnectionStateChange(v) => {
-                    if v == IceConnectionState::Disconnected {
-                        // Ice disconnect could result in trying to establish a new connection,
-                        // but this impl just disconnects directly.
-                        self.rtc.disconnect();
+            Output::Event(e) => {
+                // Log important events
+                match &e {
+                    Event::IceConnectionStateChange(state) => {
+                        info!("🔌 Server Client({}): ICE State = {:?}", *self.id, state);
                     }
-                    Propagated::Noop
+                    Event::ChannelOpen(_, _) | Event::ChannelData(_) => {
+                        // These are logged in detail below
+                    }
+                    _ => {
+                        info!("Server Client({}): Event: {:?}", *self.id, e);
+                    }
                 }
-                Event::MediaAdded(e) => self.handle_media_added(e.mid, e.kind),
-                Event::MediaData(data) => self.handle_media_data_in(data),
-                Event::KeyframeRequest(req) => self.handle_incoming_keyframe_req(req),
-                Event::ChannelOpen(cid, _) => {
-                    self.cid = Some(cid);
-                    Propagated::Noop
-                }
-                Event::ChannelData(data) => self.handle_channel_data(data),
 
-                // NB: To see statistics, uncomment set_stats_interval() above.
-                Event::MediaIngressStats(data) => {
-                    info!("{:?}", data);
-                    Propagated::Noop
+                // Handle the event
+                match e {
+                    Event::IceConnectionStateChange(v) => {
+                        if v == IceConnectionState::Disconnected {
+                            // Ice disconnect could result in trying to establish a new connection,
+                            // but this impl just disconnects directly.
+                            self.rtc.disconnect();
+                        }
+                        Propagated::Noop
+                    }
+                    Event::MediaAdded(e) => self.handle_media_added(e.mid, e.kind),
+                    Event::MediaData(data) => self.handle_media_data_in(data),
+                    Event::KeyframeRequest(req) => self.handle_incoming_keyframe_req(req),
+                    Event::ChannelOpen(cid, name) => {
+                        info!(
+                            "🎉 Server: Data channel opened for Client({}) - Name: '{}', ID: {:?}",
+                            *self.id, name, cid
+                        );
+                        if self.cid.is_some() {
+                            info!(
+                                "   ⚠️  WARNING: Server already had a channel ID: {:?}",
+                                self.cid
+                            );
+                        }
+                        self.cid = Some(cid);
+                        Propagated::Noop
+                    }
+                    Event::ChannelData(data) => {
+                        info!(
+                            "📥 Server: Client({}) received data on channel {:?}: {}",
+                            *self.id,
+                            data.id,
+                            String::from_utf8_lossy(&data.data)
+                        );
+                        self.handle_channel_data(data)
+                    }
+
+                    // NB: To see statistics, uncomment set_stats_interval() above.
+                    Event::MediaIngressStats(data) => {
+                        info!("{:?}", data);
+                        Propagated::Noop
+                    }
+                    Event::MediaEgressStats(data) => {
+                        info!("{:?}", data);
+                        Propagated::Noop
+                    }
+                    Event::PeerStats(data) => {
+                        info!("{:?}", data);
+                        Propagated::Noop
+                    }
+                    _ => Propagated::Noop,
                 }
-                Event::MediaEgressStats(data) => {
-                    info!("{:?}", data);
-                    Propagated::Noop
-                }
-                Event::PeerStats(data) => {
-                    info!("{:?}", data);
-                    Propagated::Noop
-                }
-                _ => Propagated::Noop,
-            },
+            }
         }
     }
 
@@ -251,10 +285,30 @@ impl Client {
     }
 
     fn handle_channel_data(&mut self, d: ChannelData) -> Propagated {
+        // Try to parse as SDP offer/answer first
         if let Ok(offer) = serde_json::from_slice::<'_, SdpOffer>(&d.data) {
+            info!("Server: Received SDP offer via data channel");
             self.handle_offer(offer);
-        } else if let Ok(answer) = serde_json::from_slice::<'_, SdpAnswer>(&d.data) {
+            return Propagated::Noop;
+        }
+
+        if let Ok(answer) = serde_json::from_slice::<'_, SdpAnswer>(&d.data) {
+            info!("Server: Received SDP answer via data channel");
             self.handle_answer(answer);
+            return Propagated::Noop;
+        }
+
+        // If not SDP, it's a regular message - send a reply
+        let message_str = String::from_utf8_lossy(&d.data);
+        info!("Server: Received regular message: '{}'", message_str);
+
+        // Send a response back
+        if let Some(mut channel) = self.cid.and_then(|id| self.rtc.channel(id)) {
+            let response = format!("Server received: {}", message_str);
+            match channel.write(false, response.as_bytes()) {
+                Ok(_) => info!("📤 Server: Sent response on channel {:?}", d.id),
+                Err(e) => warn!("Server: Failed to send response: {:?}", e),
+            }
         }
 
         Propagated::Noop

@@ -58,7 +58,7 @@ fn run(socket: UdpSocket, rx: Receiver<Rtc>) {
     let mut buf = vec![0; 2000];
 
     loop {
-        // Clen disconnected clients
+        // Client disconnected clients
         clients.retain(|c| c.rtc.is_alive());
 
         // Spawn new clients from the web server thread
@@ -68,6 +68,8 @@ fn run(socket: UdpSocket, rx: Receiver<Rtc>) {
                 let weak = Arc::downgrade(&track.id);
                 client.handle_track_open(weak);
             }
+
+            info!("Client: {:#?}", client);
 
             clients.push(client);
         }
@@ -120,6 +122,10 @@ fn web_request(request: &Request, addr: SocketAddr, tx: SyncSender<Rtc>) -> Resp
     let mut data = request.data().expect("body to be available");
 
     let offer: SdpOffer = serde_json::from_reader(&mut data).expect("serialised offer");
+    info!(
+        "Received offer with {} data channels",
+        offer.to_string().matches("m=application").count()
+    );
     let mut rtc: Rtc = Rtc::builder().build();
 
     let candidate = Candidate::host(addr, "udp").expect("a host candidate");
@@ -130,10 +136,13 @@ fn web_request(request: &Request, addr: SocketAddr, tx: SyncSender<Rtc>) -> Resp
         .accept_offer(offer)
         .expect("Offer to be accepted.");
 
+    info!("Created answer, sending to client thread");
+
     tx.send(rtc).expect("to send the rtc instance.");
 
     let body = serde_json::to_vec(&answer).expect("answer to serialise.");
 
+    info!("Send answer");
     Response::from_data("application/json", body)
 }
 
