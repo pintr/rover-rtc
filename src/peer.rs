@@ -2,7 +2,7 @@ use std::{
     error::Error,
     io::ErrorKind,
     net::{SocketAddrV4, UdpSocket},
-    time::{self, Instant},
+    time::Instant,
 };
 
 use str0m::{
@@ -89,10 +89,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("✅ Peer: Answer accepted, waiting for ICE connection and channel to open...");
 
-    let mut channel_open = false;
-    let mut message_count = 0;
-    let mut last_send = Instant::now();
-
     loop {
         let timeout = match rtc.poll_output().unwrap() {
             Output::Timeout(instant) => {
@@ -142,7 +138,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         info!("   ⚠️  WARNING: Channel ID does NOT match expected ID!");
                     }
-                    channel_open = true;
                 }
 
                 // Handle incoming data
@@ -163,24 +158,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         };
-
-        // Example: Send data when channel is open
-        // Send a message every 2 seconds
-        if channel_open && last_send.elapsed() > time::Duration::from_secs(2) {
-            if let Some(mut channel) = rtc.channel(cid) {
-                message_count += 1;
-                let message = format!("Hello from peer! Message #{}", message_count);
-                match channel.write(false, message.as_bytes()) {
-                    Ok(_) => {
-                        info!("📤 Peer: Sent message on channel {:?}: {:?}", cid, message);
-                        last_send = Instant::now();
-                    }
-                    Err(e) => {
-                        info!("❌ Peer: Failed to send message: {:?}", e);
-                    }
-                }
-            }
-        }
 
         // Duration until timeout.
         let duration = timeout - Instant::now();

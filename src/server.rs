@@ -1,11 +1,7 @@
 use std::{
-    collections::VecDeque,
     io::ErrorKind,
     net::{SocketAddr, UdpSocket},
-    sync::{
-        mpsc::{self, Receiver, SyncSender, TryRecvError},
-        Arc,
-    },
+    sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
     thread,
     time::{Duration, Instant},
 };
@@ -20,7 +16,7 @@ use tracing::{debug, info};
 
 use crate::util::select_host_address;
 
-use crate::model::{client::Client, propagated::Propagated};
+use crate::model::client::Client;
 
 fn init_log() {
     tracing_subscriber::fmt()
@@ -54,37 +50,33 @@ pub fn main() {
 
 fn run(socket: UdpSocket, rx: Receiver<Rtc>) {
     let mut clients: Vec<Client> = vec![];
-    let mut to_propagate: VecDeque<Propagated> = VecDeque::new();
     let mut buf = vec![0; 2000];
+    let mut last_broadcast = Instant::now();
 
     loop {
-        // Client disconnected clients
+        // Remove disconnected clients
         clients.retain(|c| c.rtc.is_alive());
 
         // Spawn new clients from the web server thread
-        if let Some(mut client) = spawn_new_client(&rx) {
-            // Add incoming tracks present in other already connected clients.
-            for track in clients.iter().flat_map(|c| c.tracks_in.iter()) {
-                let weak = Arc::downgrade(&track.id);
-                client.handle_track_open(weak);
-            }
-
-            info!("Client: {:#?}", client);
-
+        if let Some(client) = spawn_new_client(&rx) {
+            info!("New client connected: {:#?}", client);
             clients.push(client);
         }
 
-        // Poll clients until they return timeout
+        // Poll all clients and get the earliest timeout
         let mut timeout = Instant::now() + Duration::from_millis(100);
         for client in clients.iter_mut() {
-            let t = poll_until_timeout(client, &mut to_propagate, &socket);
+            let t = poll_client(client, &socket);
             timeout = timeout.min(t);
         }
 
-        // If we have an item to propagate, do that
-        if let Some(p) = to_propagate.pop_front() {
-            propagate(&p, &mut clients);
-            continue;
+        // Broadcast message from server to all clients every 5 seconds
+        if last_broadcast.elapsed() > Duration::from_secs(5) {
+            let message = format!("Server broadcast at {:?}", Instant::now());
+            for client in clients.iter_mut() {
+                client.send_message(&message);
+            }
+            last_broadcast = Instant::now();
         }
 
         // The read timeout is not allowed to be 0. In case it is 0, we set 1 millisecond.
@@ -156,54 +148,17 @@ fn spawn_new_client(rx: &Receiver<Rtc>) -> Option<Client> {
     }
 }
 
-/// Poll all the output from the client until it returns a timeout.
-/// Collect any output in the queue, transmit data on the socket, return the timeout
-fn poll_until_timeout(
-    client: &mut Client,
-    queue: &mut VecDeque<Propagated>,
-    socket: &UdpSocket,
-) -> Instant {
+/// Poll the client until it returns a timeout
+fn poll_client(client: &mut Client, socket: &UdpSocket) -> Instant {
     loop {
         if !client.rtc.is_alive() {
             // This client will be cleaned up in the next run of the main loop.
             return Instant::now();
         }
 
-        let propagated = client.poll_output(socket);
-
-        if let Propagated::Timeout(t) = propagated {
-            return t;
-        }
-
-        queue.push_back(propagated)
-    }
-}
-
-/// Sends one "propagated" to all clients, if relevant
-fn propagate(propagated: &Propagated, clients: &mut [Client]) {
-    // Do not propagate to originating client.
-    let Some(client_id) = propagated.client_id() else {
-        // If the event doesn't have a client id, it can't be propagated,
-        // (it's either a noop or a timeout).
-        return;
-    };
-
-    for client in &mut *clients {
-        if client.id == client_id {
-            // Do not propagate to originating client.
-            continue;
-        }
-
-        match &propagated {
-            Propagated::TrackOpen(_, track_in) => client.handle_track_open(track_in.clone()),
-            Propagated::MediaData(_, data) => client.handle_media_data_out(client_id, data),
-            Propagated::KeyframeRequest(_, req, origin, mid_in) => {
-                // Only one origin client handles the keyframe request.
-                if *origin == client.id {
-                    client.handle_keyframe_request(*req, *mid_in)
-                }
-            }
-            Propagated::Noop | Propagated::Timeout(_) => {}
+        match client.poll_output(socket) {
+            Some(timeout) => return timeout,
+            None => continue,
         }
     }
 }
