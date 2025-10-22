@@ -1,3 +1,9 @@
+//! WebRTC signaling server module
+//!
+//! This module implements a simple HTTP-based signaling server for WebRTC connections.
+//! It handles SDP offer/answer exchange and manages multiple WebRTC clients, relaying
+//! UDP packets between them and broadcasting periodic messages.
+
 use std::{
     io::ErrorKind,
     net::{SocketAddr, UdpSocket},
@@ -14,16 +20,24 @@ use str0m::{
 };
 use tracing::{debug, info};
 
-use crate::util::select_host_address;
+use crate::util::{init_log, select_host_address};
 
 use crate::model::client::Client;
 
-fn init_log() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
-}
-
+/// Main entry point for the WebRTC signaling server.
+///
+/// This function:
+/// 1. Initializes logging
+/// 2. Selects a host address for the UDP socket
+/// 3. Binds a random UDP port for WebRTC traffic
+/// 4. Spawns a background thread to handle WebRTC client connections
+/// 5. Starts an HTTP server on port 3000 for signaling
+///
+/// # Panics
+///
+/// Panics if:
+/// - Unable to bind a UDP socket
+/// - Unable to start the HTTP server
 pub fn main() {
     init_log();
 
@@ -48,6 +62,19 @@ pub fn main() {
     server.run();
 }
 
+/// Main event loop for managing WebRTC clients.
+///
+/// This function:
+/// - Maintains a list of active clients
+/// - Polls each client for output and handles timeouts
+/// - Routes incoming UDP packets to the appropriate client
+/// - Broadcasts messages to all clients every 5 seconds
+/// - Removes disconnected clients
+///
+/// # Arguments
+///
+/// * `socket` - The UDP socket for receiving/sending WebRTC traffic
+/// * `rx` - Channel receiver for new RTC instances from the web server thread
 fn run(socket: UdpSocket, rx: Receiver<Rtc>) {
     let mut clients: Vec<Client> = vec![];
     let mut buf = vec![0; 2000];
@@ -107,6 +134,20 @@ fn run(socket: UdpSocket, rx: Receiver<Rtc>) {
     }
 }
 
+/// Handles incoming HTTP requests for WebRTC signaling.
+///
+/// This function processes SDP offers from clients, creates an SDP answer,
+/// and sends the new RTC instance to the main event loop via the channel.
+///
+/// # Arguments
+///
+/// * `request` - The incoming HTTP request containing the SDP offer
+/// * `addr` - The socket address of the UDP port for WebRTC traffic
+/// * `tx` - Channel sender for passing new RTC instances to the main loop
+///
+/// # Returns
+///
+/// An HTTP response containing the SDP answer in JSON format
 fn web_request(request: &Request, addr: SocketAddr, tx: SyncSender<Rtc>) -> Response {
     // request.
     info!("{:#?}", request);
@@ -138,7 +179,22 @@ fn web_request(request: &Request, addr: SocketAddr, tx: SyncSender<Rtc>) -> Resp
     Response::from_data("application/json", body)
 }
 
-/// Receive new clients from the receiver and create new Client instances.
+/// Attempts to receive new clients from the channel and create Client instances.
+///
+/// Uses `try_recv` to avoid blocking the main thread.
+///
+/// # Arguments
+///
+/// * `rx` - The receiver channel for new RTC instances
+///
+/// # Returns
+///
+/// * `Some(Client)` - A new client instance if one was received
+/// * `None` - If no client is available in the channel
+///
+/// # Panics
+///
+/// Panics if the receiver channel is disconnected
 fn spawn_new_client(rx: &Receiver<Rtc>) -> Option<Client> {
     // try_recv here won't lock up the thread.
     match rx.try_recv() {
@@ -148,7 +204,19 @@ fn spawn_new_client(rx: &Receiver<Rtc>) -> Option<Client> {
     }
 }
 
-/// Poll the client until it returns a timeout
+/// Polls a client for output events and handles them until a timeout is returned.
+///
+/// This function processes all available output from the client (transmit events)
+/// and returns when the next timeout should occur.
+///
+/// # Arguments
+///
+/// * `client` - The client to poll
+/// * `socket` - The UDP socket for sending outgoing traffic
+///
+/// # Returns
+///
+/// The instant at which the next timeout should occur
 fn poll_client(client: &mut Client, socket: &UdpSocket) -> Instant {
     loop {
         if !client.rtc.is_alive() {
@@ -163,6 +231,24 @@ fn poll_client(client: &mut Client, socket: &UdpSocket) -> Instant {
     }
 }
 
+/// Attempts to read incoming data from the UDP socket.
+///
+/// Handles socket read timeouts gracefully and converts received data into
+/// str0m `Input` events for processing by RTC instances.
+///
+/// # Arguments
+///
+/// * `socket` - The UDP socket to read from
+/// * `buf` - A buffer for storing received data
+///
+/// # Returns
+///
+/// * `Some(Input)` - An input event containing the received data and source address
+/// * `None` - If the read timed out or the socket would block
+///
+/// # Panics
+///
+/// Panics on unexpected socket errors (other than timeout/would block)
 fn read_socket_input<'a>(socket: &UdpSocket, buf: &'a mut Vec<u8>) -> Option<Input<'a>> {
     buf.resize(2000, 0);
 

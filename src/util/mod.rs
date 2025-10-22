@@ -1,20 +1,25 @@
+//! Utility functions for network configuration
+//!
+//! This module provides helper functions for discovering network interfaces,
+//! selecting appropriate IP addresses, and generating ICE candidates for WebRTC.
+
 use local_ip_address::list_afinet_netifas;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use str0m::Candidate;
 use systemstat::{Platform, System};
 use tracing::info;
 
-/// Pick an IPv4 address that can be shared with a remote ICE peer.
+/// Selects an appropriate IPv4 address for WebRTC communication.
 ///
 /// Iterates over all network interfaces provided by `systemstat`, skipping any
 /// loopback, link-local or broadcast addresses. The first routable interface is
 /// returned as an [`IpAddr`].
 ///
-/// ## Returns
+/// # Returns
 ///
-/// * `IpAddr`: The first routable network interface.
+/// * `IpAddr` - The first routable IPv4 network interface
 ///
-/// ## Panics
+/// # Panics
 ///
 /// Panics if the host exposes no usable IPv4 address. This is acceptable for
 /// the prototype CLI binaries, but production callers should consider wrapping
@@ -36,6 +41,23 @@ pub fn select_host_address() -> IpAddr {
     panic!("Found no usable network interface");
 }
 
+/// Generates a list of ICE candidates from available network interfaces.
+///
+/// Discovers all network interfaces on the system and creates host ICE candidates
+/// for each routable IPv4 address. Skips loopback and link-local addresses.
+/// IPv6 addresses are currently not supported.
+///
+/// # Arguments
+///
+/// * `socket` - The UDP socket whose port will be used for the candidates
+///
+/// # Returns
+///
+/// A vector of [`Candidate`] objects representing the available network interfaces
+///
+/// # Note
+///
+/// The function logs all discovered interfaces for debugging purposes.
 pub fn get_candidates(socket: &UdpSocket) -> Vec<Candidate> {
     let mut candidates: Vec<Candidate> = vec![];
     if let Ok(network_interfaces) = list_afinet_netifas() {
@@ -57,4 +79,20 @@ pub fn get_candidates(socket: &UdpSocket) -> Vec<Candidate> {
     }
 
     candidates
+}
+
+/// Initializes the tracing subscriber with environment-based filtering.
+///
+/// Defaults to INFO level logging, but can be overridden via the `RUST_LOG`
+/// environment variable. Enables debug logging for HTTP and str0m.
+pub fn init_log() {
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,http_post=debug,str0m=debug"));
+
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(env_filter)
+        .init();
 }

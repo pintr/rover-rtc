@@ -1,3 +1,9 @@
+//! WebRTC peer client module
+//!
+//! This module implements a WebRTC peer client that establishes a direct P2P
+//! connection with another peer via a signaling server. It creates a data channel
+//! for bidirectional communication and handles the complete ICE negotiation process.
+
 use std::{
     error::Error,
     io::ErrorKind,
@@ -12,30 +18,45 @@ use str0m::{
 };
 use tracing::info;
 
-use crate::util::get_candidates;
+use crate::util::{get_candidates, init_log};
 
+/// Errors that can occur during WebRTC peer operations.
 #[derive(Debug)]
 pub enum WebrtcError {
+    /// Error communicating with the signaling server
     ServerError(Box<dyn Error + Send + Sync>),
+    /// Error related to SDP negotiation
     SdpError,
+    /// General WebRTC error
     WebrtcError(Box<dyn Error + Send + Sync>),
+    /// Network communication error
     NetworkError(Box<dyn Error + Send + Sync>),
+    /// Error sending data on a channel
     SendError(String),
+    /// No ICE candidates were found
     NoCandidates,
 }
 
-fn init_log() {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,http_post=debug,str0m=debug"));
-
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(env_filter)
-        .init();
-}
-
+/// Main entry point for the WebRTC peer client.
+///
+/// This async function performs the complete WebRTC connection sequence:
+/// 1. Creates a new RTC instance and binds a UDP socket
+/// 2. Discovers and adds local ICE candidates
+/// 3. Creates a data channel and generates an SDP offer
+/// 4. Sends the offer to the signaling server and receives an answer
+/// 5. Accepts the answer and starts the connection process
+/// 6. Enters the main event loop to handle ICE state changes, channel events, and data
+/// 7. Processes incoming/outgoing UDP packets and drives the WebRTC state machine
+///
+/// # Returns
+///
+/// * `Ok(())` - If the peer completes successfully or disconnects gracefully
+/// * `Err(Box<dyn Error>)` - If any error occurs during the connection process
+///
+/// # Example Data Channel
+///
+/// The peer creates a data channel named "test" which can be used to send and receive
+/// arbitrary binary data once the connection is established.
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting modern str0m peer...");
