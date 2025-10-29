@@ -78,10 +78,9 @@ pub fn main() {
 fn run(socket: UdpSocket, rx: Receiver<Rtc>) {
     let mut clients: Vec<Client> = vec![];
     let mut buf = vec![0; 2000];
-    let mut last_broadcast = Instant::now();
 
     loop {
-        // Remove disconnected clients
+        // Removedisconnected clients
         clients.retain(|c| c.rtc.is_alive());
 
         // Spawn new clients from the web server thread
@@ -96,22 +95,6 @@ fn run(socket: UdpSocket, rx: Receiver<Rtc>) {
             let t = poll_client(client, &socket);
             timeout = timeout.min(t);
         }
-
-        // Broadcast message from server to all clients every 5 seconds
-        if last_broadcast.elapsed() > Duration::from_secs(5) {
-            let message = format!("Server broadcast at {:?}", Instant::now());
-            for client in clients.iter_mut() {
-                client.send_message(&message);
-            }
-            last_broadcast = Instant::now();
-        }
-
-        // The read timeout is not allowed to be 0. In case it is 0, we set 1 millisecond.
-        let duration = (timeout - Instant::now()).max(Duration::from_millis(1));
-
-        socket
-            .set_read_timeout(Some(duration))
-            .expect("setting socket read timeout");
 
         if let Some(input) = read_socket_input(&socket, &mut buf) {
             // The rtc.accepts() call is how we demultiplex the incoming packet to know which

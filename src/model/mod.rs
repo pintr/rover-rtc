@@ -4,3 +4,4 @@
 //! for managing clients, tracks, and propagated events.
 
 pub mod client;
+pub mod payload;

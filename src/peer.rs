@@ -8,7 +8,7 @@ use std::{
     error::Error,
     io::ErrorKind,
     net::{SocketAddrV4, UdpSocket},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use str0m::{
@@ -16,9 +16,13 @@ use str0m::{
     net::{Protocol, Receive},
     Event, IceConnectionState, Input, Output, Rtc,
 };
+
 use tracing::info;
 
-use crate::util::{get_candidates, init_log};
+use crate::{
+    model::payload::Payload,
+    util::{get_candidates, init_log},
+};
 
 /// Errors that can occur during WebRTC peer operations.
 #[derive(Debug)]
@@ -70,6 +74,13 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Should bind udp socket");
     let candidates = get_candidates(&socket);
 
+    // Store the first candidate's address to use as destination in receives
+    // All candidates share the same port, so we can use any of them
+    let local_addr = candidates
+        .first()
+        .map(|c| c.addr())
+        .expect("At least one candidate should be available");
+
     for candidate in candidates {
         rtc.add_local_candidate(candidate);
     }
@@ -79,19 +90,17 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (offer, pending) = change.apply().ok_or("Failed to apply sdp change")?;
 
-    // let sdp_string = create_data_channel_offer(CHANNEL).await?;
-
     info!(" Offer SDP:\n{}", offer);
 
-    // // 1. ✅ DECLARE INTENT: Request a new data channel.
+    // // 1. DECLARE INTENT: Request a new data channel.
     // // This registers your desire for a channel; it doesn't create it yet.
 
     info!(
-        "📝 Peer: Requested data channel '{}' with ID: {:?}",
+        "Peer: Requested data channel '{}' with ID: {:?}",
         CHANNEL, cid
     );
 
-    // // 2. ➡️ DRIVE THE STATE MACHINE: The `poll_output` loop.
+    // // 2. DRIVE THE STATE MACHINE: The `poll_output` loop.
     // // This replaces the direct call to `create_offer`.
 
     let mut buf = vec![0; 2000];
@@ -104,11 +113,14 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .json()
         .await?;
 
-    info!("📥 Answer SDP:\n{}", answer);
+    info!("Answer SDP:\n{}", answer);
 
     rtc.sdp_api().accept_answer(pending, answer)?;
 
-    info!("✅ Peer: Answer accepted, waiting for ICE connection and channel to open...");
+    info!("Peer: Answer accepted, waiting for ICE connection and channel to open...");
+
+    let mut channel_opened = false;
+    let mut last_message_time = Instant::now();
 
     loop {
         let timeout = match rtc.poll_output().unwrap() {
@@ -126,7 +138,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Event::IceConnectionStateChange(_)
                     | Event::ChannelOpen(_, _)
                     | Event::ChannelData(_) => {
-                        info!("📨 Event: {:?}", event);
+                        info!("Event: {:?}", event);
                     }
                     _ => {
                         // Still log other events at debug level
@@ -136,35 +148,36 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Track ICE connection state changes
                 if let Event::IceConnectionStateChange(state) = &event {
-                    info!("🔌 ICE Connection State: {:?}", state);
+                    info!("ICE Connection State: {:?}", state);
                     match state {
-                        IceConnectionState::New => info!("   → ICE is starting..."),
-                        IceConnectionState::Checking => info!("   → ICE is checking candidates..."),
+                        IceConnectionState::New => info!("ICE is starting..."),
+                        IceConnectionState::Checking => info!("ICE is checking candidates..."),
                         IceConnectionState::Connected => {
-                            info!("   → ✅ ICE Connected! Data channel should open soon.")
+                            info!("ICE Connected! Data channel should open soon.")
                         }
-                        IceConnectionState::Completed => info!("   → ✅ ICE Completed!"),
-                        IceConnectionState::Disconnected => info!("   → ❌ ICE Disconnected"),
+                        IceConnectionState::Completed => info!("ICE Completed!"),
+                        IceConnectionState::Disconnected => info!("ICE Disconnected"),
                     }
                 }
 
                 // Handle channel opening
                 if let Event::ChannelOpen(channel_id, name) = &event {
                     info!(
-                        "🎉 Peer: Channel opened - Name: '{}', ID: {:?}, Expected ID: {:?}",
+                        "Peer: Channel opened - Name: '{}', ID: {:?}, Expected ID: {:?}",
                         name, channel_id, cid
                     );
                     if channel_id == &cid {
-                        info!("   ✅ Channel ID matches expected ID!");
+                        info!("   Channel ID matches expected ID!");
+                        channel_opened = true;
                     } else {
-                        info!("   ⚠️  WARNING: Channel ID does NOT match expected ID!");
+                        info!("WARNING: Channel ID does NOT match expected ID!");
                     }
                 }
 
                 // Handle incoming data
                 if let Event::ChannelData(msg) = &event {
                     info!(
-                        "📥 Received data on channel {:?}: {:?}",
+                        "Received data on channel {:?}: {:?}",
                         msg.id,
                         String::from_utf8_lossy(&msg.data)
                     );
@@ -172,7 +185,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Abort if we disconnect
                 if event == Event::IceConnectionStateChange(IceConnectionState::Disconnected) {
-                    info!("⚠️ Disconnecting due to ICE state change");
+                    info!("Disconnecting due to ICE state change");
                     break;
                 }
 
@@ -180,8 +193,34 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
+        // Send periodic timestamps to server if channel is open
+        if channel_opened && last_message_time.elapsed() > Duration::from_secs(2) {
+            if let Some(mut channel) = rtc.channel(cid) {
+                let payload: Payload = Payload::new("ciao".as_bytes());
+                info!(
+                    "Sending message {}\n Timestamp: {}",
+                    payload.data(),
+                    payload.timestamp()
+                );
+                match channel.write(false, &Payload::serialize(payload)) {
+                    Ok(_) => {
+                        info!("Message sent");
+                        last_message_time = Instant::now();
+                        // Continue immediately to poll_output and flush the written data
+                        continue;
+                    }
+                    Err(e) => {
+                        info!("Peer: Failed to send message: {:?}", e);
+                    }
+                }
+            }
+        }
+
         // Duration until timeout.
-        let duration = timeout - Instant::now();
+        // Cap the duration at 100ms to ensure we process incoming packets frequently
+        let duration = (timeout - Instant::now())
+            .max(Duration::from_millis(1))
+            .min(Duration::from_millis(100));
 
         // socket.set_read_timeout(Some(0)) is not ok
         if duration.is_zero() {
@@ -197,9 +236,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Try to receive. Because we have a timeout on the socket,
         // we will either receive a packet, or timeout.
-        // This is where having an async loop shines. We can await multiple things to
-        // happen such as outgoing media data, the timeout and incoming network traffic.
-        // When using async there is no need to set timeout on the socket.
         let input = match socket.recv_from(&mut buf) {
             Ok((n, source)) => {
                 // UDP data received.
@@ -209,7 +245,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Receive {
                         proto: Protocol::Udp,
                         source,
-                        destination: socket.local_addr().unwrap(),
+                        destination: local_addr,
                         contents: buf.as_slice().try_into().unwrap(),
                     },
                 )

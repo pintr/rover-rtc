@@ -13,6 +13,8 @@ use str0m::channel::ChannelId;
 use str0m::{Event, IceConnectionState, Input, Output, Rtc};
 use tracing::{info, warn};
 
+use crate::model::payload::Payload;
+
 /// Represents a connected WebRTC client with its own RTC instance.
 ///
 /// Each client has a unique ID and maintains its own WebRTC state, including
@@ -154,7 +156,7 @@ impl Client {
                 // Log important events
                 match &e {
                     Event::IceConnectionStateChange(state) => {
-                        info!("🔌 Server Client({}): ICE State = {:?}", *self.id, state);
+                        info!("Server Client({}): ICE State = {:?}", *self.id, state);
                     }
                     Event::ChannelOpen(_, _) | Event::ChannelData(_) => {
                         // These are logged in detail below
@@ -173,17 +175,20 @@ impl Client {
                     }
                     Event::ChannelOpen(cid, name) => {
                         info!(
-                            "🎉 Server: Data channel opened for Client({}) - Name: '{}', ID: {:?}",
+                            "Data channel opened for Client({}) - Name: '{}', ID: {:?}",
                             *self.id, name, cid
                         );
                         self.cid = Some(cid);
                     }
                     Event::ChannelData(data) => {
+                        let payload: Payload = Payload::deserialize(data.data);
                         info!(
-                            "📥 Server: Client({}) received data on channel {:?}: {}",
+                            "Client({}) received data on channel {:?}: {}\n timestamp: {}\n latency (ms): {}",
                             *self.id,
                             data.id,
-                            String::from_utf8_lossy(&data.data)
+                            payload.data(),
+                            payload.timestamp(),
+                            payload.latency()
                         );
                     }
                     _ => {}
@@ -206,10 +211,10 @@ impl Client {
             if let Some(mut channel) = self.rtc.channel(cid) {
                 match channel.write(false, message.as_bytes()) {
                     Ok(_) => {
-                        info!("📤 Server: Sent to Client({}): {}", *self.id, message);
+                        info!("Sent to Client({}): {}", *self.id, message);
                     }
                     Err(e) => {
-                        warn!("Server: Failed to send to Client({}): {:?}", *self.id, e);
+                        warn!("Failed to send to Client({}): {:?}", *self.id, e);
                     }
                 }
             }
