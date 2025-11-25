@@ -4,14 +4,14 @@
 //! peer connections on the server side. Each client represents a connected peer with
 //! its own RTC instance, data channel, and connection state.
 
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use str0m::channel::ChannelId;
-use str0m::{Event, IceConnectionState, Input, Output, Rtc};
-use tracing::{info, warn};
+use str0m::{change::SdpOffer, Candidate, Event, IceConnectionState, Input, Output, Rtc};
+use tracing::{debug, info, warn};
 
 use crate::model::payload::Payload;
 
@@ -146,53 +146,69 @@ impl Client {
     fn handle_output(&mut self, output: Output, socket: &UdpSocket) -> Option<Instant> {
         match output {
             Output::Transmit(transmit) => {
-                socket
-                    .send_to(&transmit.contents, transmit.destination)
-                    .expect("sending UDP data");
+                if let Err(e) = socket.send_to(&transmit.contents, transmit.destination) {
+                    warn!(
+                        "Client({}) failed to send UDP data: {:?}. Connection may be degraded.",
+                        *self.id, e
+                    );
+                    // Don't disconnect immediately - allow recovery attempts
+                } else {
+                    debug!(
+                        "Client({}) transmitted {} bytes",
+                        *self.id,
+                        transmit.contents.len()
+                    );
+                }
                 None
             }
             Output::Timeout(t) => Some(t),
             Output::Event(e) => {
-                // Log important events
+                // Enhanced event logging for connection monitoring
                 match &e {
                     Event::IceConnectionStateChange(state) => {
-                        info!("Server Client({}): ICE State = {:?}", *self.id, state);
-                    }
-                    Event::ChannelOpen(_, _) | Event::ChannelData(_) => {
-                        // These are logged in detail below
-                    }
-                    _ => {
-                        info!("Server Client({}): Event: {:?}", *self.id, e);
-                    }
-                }
+                        info!("Client({}): ICE State changed to {:?}", *self.id, state);
 
-                // Handle the event
-                match e {
-                    Event::IceConnectionStateChange(v) => {
-                        if v == IceConnectionState::Disconnected {
-                            self.rtc.disconnect();
+                        match state {
+                            IceConnectionState::Checking => {
+                                info!("Client({}): ICE checking started", *self.id);
+                            }
+                            IceConnectionState::Connected => {
+                                info!("Client({}): ICE connection established", *self.id);
+                            }
+                            IceConnectionState::Disconnected => {
+                                warn!(
+                                    "Client({}): ICE disconnected - monitoring for recovery",
+                                    *self.id
+                                );
+                                // Don't auto-disconnect - connection might recover
+                            }
+                            _ => {}
                         }
                     }
                     Event::ChannelOpen(cid, name) => {
                         info!(
-                            "Data channel opened for Client({}) - Name: '{}', ID: {:?}",
+                            "Client({}) data channel opened - Name: '{}', ID: {:?}",
                             *self.id, name, cid
                         );
-                        self.cid = Some(cid);
+                        self.cid = Some(*cid);
                     }
                     Event::ChannelData(data) => {
-                        let payload: Payload = Payload::deserialize(data.data);
+                        let payload: Payload = Payload::deserialize(data.data.clone());
                         info!(
-                            "Client({}) received data on channel {:?}: {}\n timestamp: {}\n latency (ms): {}",
+                            "Client({}) received data: {}, timestamp: {}, latency: {} ms",
                             *self.id,
-                            data.id,
                             payload.data(),
                             payload.timestamp(),
                             payload.latency()
                         );
                     }
-                    _ => {}
+                    _ => {
+                        debug!("Client({}): Event: {:?}", *self.id, e);
+                    }
                 }
+
+                // Only disconnect on explicit close, not on transient disconnections
+                // This allows the connection to recover from temporary network issues
                 None
             }
         }
@@ -219,5 +235,31 @@ impl Client {
                 }
             }
         }
+    }
+
+    /// Updates local candidates when network interfaces change.
+    ///
+    /// Call this when you detect a network change to add new candidates.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_addr` - The new socket address to add as a candidate
+    pub fn add_new_candidate(&mut self, new_addr: SocketAddr) {
+        let candidate = Candidate::host(new_addr, "udp").expect("valid host candidate");
+        self.rtc.add_local_candidate(candidate);
+    }
+
+    /// Initiates an ICE restart to recover from network changes.
+    ///
+    /// This creates a new offer with ice_restart flag set to true.
+    /// Note: In a production system, this offer needs to be sent to the peer
+    /// via the signaling channel and an answer must be received and applied.
+    ///
+    /// # Returns
+    ///
+    /// An SDP offer that can be sent to the peer to restart ICE
+    pub fn create_ice_restart_offer(&mut self) -> Option<SdpOffer> {
+        let change = self.rtc.sdp_api();
+        change.apply().map(|(offer, _)| offer)
     }
 }

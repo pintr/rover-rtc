@@ -70,7 +70,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut rtc = Rtc::new();
 
-    let socket = UdpSocket::bind("0.0.0.0:0".parse::<SocketAddrV4>().unwrap())
+    let socket = UdpSocket::bind("0.0.0.0:0".parse::<SocketAddrV4>().expect("Parsing failed"))
         .expect("Should bind udp socket");
     let candidates = get_candidates(&socket);
 
@@ -123,7 +123,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_message_time = Instant::now();
 
     loop {
-        let timeout = match rtc.poll_output().unwrap() {
+        let timeout = match rtc.poll_output().expect("Unable to poll output") {
             Output::Timeout(instant) => {
                 // info!("{:?}", instant);
                 instant
@@ -225,11 +225,14 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // socket.set_read_timeout(Some(0)) is not ok
         if duration.is_zero() {
             // Drive time forwards in rtc straight away.
-            rtc.handle_input(Input::Timeout(Instant::now())).unwrap();
+            rtc.handle_input(Input::Timeout(Instant::now()))
+                .expect("Input should be handled.");
             continue;
         }
 
-        socket.set_read_timeout(Some(duration)).unwrap();
+        socket
+            .set_read_timeout(Some(duration))
+            .expect("Timeout should be set.");
 
         // Scale up buffer to receive an entire UDP packet.
         buf.resize(2000, 0);
@@ -246,7 +249,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         proto: Protocol::Udp,
                         source,
                         destination: local_addr,
-                        contents: buf.as_slice().try_into().unwrap(),
+                        contents: buf
+                            .as_slice()
+                            .try_into()
+                            .expect("The content of the buffer should be parsed."),
                     },
                 )
             }
@@ -263,7 +269,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         // Input is either a Timeout or Receive of data. Both drive the state forward.
-        rtc.handle_input(input).unwrap();
+        rtc.handle_input(input)
+            .expect("The input should be handled correctly.");
     }
 
     Ok(())

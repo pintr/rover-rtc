@@ -26,7 +26,7 @@ use tracing::info;
 /// the logic in a fallible API and handling the error gracefully.
 pub fn select_host_address() -> IpAddr {
     let system = System::new();
-    let networks = system.networks().unwrap();
+    let networks = system.networks().expect("Networks should be available.");
 
     for net in networks.values() {
         for n in &net.addrs {
@@ -66,7 +66,13 @@ pub fn get_candidates(socket: &UdpSocket) -> Vec<Candidate> {
             match ip {
                 IpAddr::V4(ip4) => {
                     if !ip4.is_loopback() && !ip4.is_link_local() {
-                        let socket_addr = SocketAddr::new(ip, socket.local_addr().unwrap().port());
+                        let socket_addr = SocketAddr::new(
+                            ip,
+                            socket
+                                .local_addr()
+                                .expect("Local address should be available.")
+                                .port(),
+                        );
                         candidates.push(
                             Candidate::host(socket_addr, str0m::net::Protocol::Udp)
                                 .expect("Failed to create local candidate"),

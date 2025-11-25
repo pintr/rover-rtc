@@ -5,6 +5,7 @@
 //! UDP packets between them and broadcasting periodic messages.
 
 use std::{
+    collections::HashMap,
     io::ErrorKind,
     net::{SocketAddr, UdpSocket},
     sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
@@ -18,11 +19,45 @@ use str0m::{
     net::{Protocol, Receive},
     Candidate, Input, Rtc,
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::util::{init_log, select_host_address};
 
 use crate::model::client::Client;
+
+/// Tracks connection health for each client
+#[derive(Debug)]
+struct ConnectionHealth {
+    last_activity: Instant,
+    consecutive_failures: u32,
+    ice_restart_attempts: u32,
+}
+
+impl ConnectionHealth {
+    fn new() -> Self {
+        Self {
+            last_activity: Instant::now(),
+            consecutive_failures: 0,
+            ice_restart_attempts: 0,
+        }
+    }
+
+    fn mark_activity(&mut self) {
+        self.last_activity = Instant::now();
+        self.consecutive_failures = 0;
+    }
+
+    fn mark_failure(&mut self) {
+        self.consecutive_failures += 1;
+    }
+
+    fn should_attempt_recovery(&self) -> bool {
+        // Attempt recovery if no activity for 10 seconds and fewer than 3 restart attempts
+        self.last_activity.elapsed() > Duration::from_secs(10)
+            && self.consecutive_failures > 3
+            && self.ice_restart_attempts < 3
+    }
+}
 
 /// Main entry point for the WebRTC signaling server.
 ///
@@ -77,16 +112,32 @@ pub fn main() {
 /// * `rx` - Channel receiver for new RTC instances from the web server thread
 fn run(socket: UdpSocket, rx: Receiver<Rtc>) {
     let mut clients: Vec<Client> = vec![];
+    let mut health: HashMap<u64, ConnectionHealth> = HashMap::new();
     let mut buf = vec![0; 2000];
+    let mut last_health_check = Instant::now();
 
     loop {
-        // Removedisconnected clients
-        clients.retain(|c| c.rtc.is_alive());
+        // Remove disconnected clients and their health records
+        clients.retain(|c| {
+            let alive = c.rtc.is_alive();
+            if !alive {
+                info!("Client({}) disconnected, removing from pool", *c.id);
+                health.remove(&*c.id);
+            }
+            alive
+        });
 
         // Spawn new clients from the web server thread
         if let Some(client) = spawn_new_client(&rx) {
-            info!("New client connected: {:#?}", client);
+            info!("New client connected: Client({})", *client.id);
+            health.insert(*client.id, ConnectionHealth::new());
             clients.push(client);
+        }
+
+        // Periodic health check every 5 seconds
+        if last_health_check.elapsed() > Duration::from_secs(5) {
+            check_client_health(&mut clients, &mut health, &socket);
+            last_health_check = Instant::now();
         }
 
         // Poll all clients and get the earliest timeout
@@ -94,6 +145,11 @@ fn run(socket: UdpSocket, rx: Receiver<Rtc>) {
         for client in clients.iter_mut() {
             let t = poll_client(client, &socket);
             timeout = timeout.min(t);
+
+            // Update health on successful poll
+            if let Some(h) = health.get_mut(&*client.id) {
+                h.mark_activity();
+            }
         }
 
         if let Some(input) = read_socket_input(&socket, &mut buf) {
@@ -102,10 +158,20 @@ fn run(socket: UdpSocket, rx: Receiver<Rtc>) {
             if let Some(client) = clients.iter_mut().find(|c| c.accepts(&input)) {
                 // We found the client that accepts the input.
                 client.handle_input(input);
+
+                // Mark activity on successful input
+                if let Some(h) = health.get_mut(&*client.id) {
+                    h.mark_activity();
+                }
             } else {
                 // This is quite common because we don't get the Rtc instance via the mpsc channel
                 // quickly enough before the browser send the first STUN.
-                debug!("No client accepts UDP input: {:?}", input);
+                debug!("No client accepts UDP input");
+
+                // Mark potential failures for all clients
+                for h in health.values_mut() {
+                    h.mark_failure();
+                }
             }
         }
 
@@ -145,7 +211,8 @@ fn web_request(request: &Request, addr: SocketAddr, tx: SyncSender<Rtc>) -> Resp
     let mut rtc: Rtc = Rtc::builder().build();
 
     let candidate = Candidate::host(addr, "udp").expect("a host candidate");
-    rtc.add_local_candidate(candidate).unwrap();
+    rtc.add_local_candidate(candidate)
+        .expect("Local candidate should be added.");
 
     let answer = rtc
         .sdp_api()
@@ -214,6 +281,92 @@ fn poll_client(client: &mut Client, socket: &UdpSocket) -> Instant {
     }
 }
 
+/// Checks the health of all clients and attempts recovery if needed
+///
+/// This function monitors connection health and can initiate recovery attempts
+/// for degraded connections.
+///
+/// # Arguments
+///
+/// * `clients` - Mutable reference to the list of all clients
+/// * `health` - Mutable reference to the health tracking map
+/// * `socket` - The UDP socket (for potential recovery operations)
+fn check_client_health(
+    clients: &mut Vec<Client>,
+    health: &mut HashMap<u64, ConnectionHealth>,
+    socket: &UdpSocket,
+) {
+    for client in clients.iter_mut() {
+        let Some(h) = health.get_mut(&*client.id) else {
+            continue;
+        };
+
+        // Check if client needs recovery
+        if h.should_attempt_recovery() {
+            warn!(
+                "Client({}) connection health degraded. \
+                Last activity: {:?} ago, Failures: {}",
+                *client.id,
+                h.last_activity.elapsed(),
+                h.consecutive_failures
+            );
+
+            attempt_connection_recovery(client, h, socket);
+        }
+
+        // Log connection state for monitoring (every health check)
+        if h.last_activity.elapsed() > Duration::from_secs(5) {
+            info!(
+                "Client({}) inactive for {:?}, Failures: {}",
+                *client.id,
+                h.last_activity.elapsed(),
+                h.consecutive_failures
+            );
+        }
+    }
+}
+
+/// Attempts to recover a degraded connection
+///
+/// This function tries to recover a client connection by adding new candidates
+/// if the socket address has changed.
+///
+/// # Arguments
+///
+/// * `client` - The client to recover
+/// * `health` - The health tracker for this client
+/// * `socket` - The UDP socket
+fn attempt_connection_recovery(
+    client: &mut Client,
+    health: &mut ConnectionHealth,
+    socket: &UdpSocket,
+) {
+    health.ice_restart_attempts += 1;
+
+    info!(
+        "Attempting connection recovery for Client({}) (attempt {})",
+        *client.id, health.ice_restart_attempts
+    );
+
+    // Note: Full ICE restart requires signaling channel to exchange new offer/answer
+    // In a real implementation, you would:
+    // 1. Create ICE restart offer: client.create_ice_restart_offer()
+    // 2. Send it to the peer via signaling channel
+    // 3. Receive answer and apply it
+
+    // For now, we can try adding a new candidate if socket address is available
+    if let Ok(local_addr) = socket.local_addr() {
+        client.add_new_candidate(local_addr);
+        info!(
+            "Added new candidate for Client({}) with address: {}",
+            *client.id, local_addr
+        );
+    }
+
+    // Reset failure counter to give recovery a chance
+    health.consecutive_failures = 0;
+}
+
 /// Attempts to read incoming data from the UDP socket.
 ///
 /// Handles socket read timeouts gracefully and converts received data into
@@ -250,7 +403,9 @@ fn read_socket_input<'a>(socket: &UdpSocket, buf: &'a mut Vec<u8>) -> Option<Inp
                 Receive {
                     proto: Protocol::Udp,
                     source,
-                    destination: socket.local_addr().unwrap(),
+                    destination: socket
+                        .local_addr()
+                        .expect("Local address should be available."),
                     contents,
                 },
             ))
