@@ -106,7 +106,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = vec![0; 2000];
     let client = reqwest::Client::new();
     let answer: SdpAnswer = client
-        .post("http://172.17.0.1:3000")
+        .post("http://0.0.0.0:3000")
         .body(serde_json::to_string(&offer)?)
         .send()
         .await?

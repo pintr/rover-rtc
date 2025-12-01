@@ -12,12 +12,13 @@ use tracing::info;
 /// Selects an appropriate IPv4 address for WebRTC communication.
 ///
 /// Iterates over all network interfaces provided by `systemstat`, skipping any
-/// loopback, link-local or broadcast addresses. The first routable interface is
-/// returned as an [`IpAddr`].
+/// loopback, link-local, broadcast addresses, Docker networks, and bridge networks.
+/// Only returns interfaces that have internet access. The first routable interface
+/// with internet connectivity is returned as an [`IpAddr`].
 ///
 /// # Returns
 ///
-/// * `IpAddr` - The first routable IPv4 network interface
+/// * `IpAddr` - The first routable IPv4 network interface with internet access
 ///
 /// # Panics
 ///
@@ -28,17 +29,64 @@ pub fn select_host_address() -> IpAddr {
     let system = System::new();
     let networks = system.networks().expect("Networks should be available.");
 
-    for net in networks.values() {
+    info!("Networks {:#?}", networks);
+
+    for (name, net) in networks {
+        // Skip Docker and bridge interfaces by name
+        let name_lower = name.to_lowercase();
+        if name_lower.contains("docker")
+            || name_lower.starts_with("br-")
+            || name_lower.starts_with("veth")
+            || name_lower.starts_with("virbr")
+        {
+            info!("Skipping interface {} (Docker/bridge)", name);
+            continue;
+        }
+
         for n in &net.addrs {
             if let systemstat::IpAddr::V4(v) = n.addr {
                 if !v.is_loopback() && !v.is_link_local() && !v.is_broadcast() {
-                    return IpAddr::V4(v);
+                    let ip_addr = IpAddr::V4(v);
+
+                    // Verify internet connectivity by trying to bind and connect
+                    if has_internet_access(&ip_addr) {
+                        info!("Selected interface {} with IP {}", name, ip_addr);
+                        return ip_addr;
+                    } else {
+                        info!("Interface {} has no internet access, skipping", name);
+                    }
                 }
             }
         }
     }
 
-    panic!("Found no usable network interface");
+    panic!("Found no usable network interface with internet access");
+}
+
+/// Checks if a given IP address has internet access.
+///
+/// Attempts to create a UDP socket bound to the given IP and connect to
+/// Google's public DNS server (8.8.8.8:53) to verify internet connectivity.
+///
+/// # Arguments
+///
+/// * `ip` - The IP address to check for internet access
+///
+/// # Returns
+///
+/// * `bool` - `true` if the interface has internet access, `false` otherwise
+fn has_internet_access(ip: &IpAddr) -> bool {
+    // Try to bind to the specific IP and connect to a public DNS server
+    let bind_addr = SocketAddr::new(*ip, 0);
+
+    match UdpSocket::bind(bind_addr) {
+        Ok(socket) => {
+            // Try to connect to Google's public DNS (8.8.8.8:53)
+            // This doesn't send data, just verifies routing is possible
+            socket.connect("8.8.8.8:53").is_ok()
+        }
+        Err(_) => false,
+    }
 }
 
 /// Generates a list of ICE candidates from available network interfaces.

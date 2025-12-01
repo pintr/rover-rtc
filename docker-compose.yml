@@ -1,0 +1,56 @@
+version: "3.8"
+
+services:
+  # Signaling server - stays on a stable network
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: server
+    ports:
+      - "3000:3000"
+    networks:
+      - network_a
+      - network_b
+    environment:
+      - RUST_LOG=info
+    container_name: rover-server
+    cap_add:
+      - NET_ADMIN
+    stdin_open: true
+    tty: true
+
+  # Peer client - will switch between networks
+  peer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: peer
+    depends_on:
+      - server
+    networks:
+      - network_a
+    environment:
+      - RUST_LOG=info
+    container_name: rover-peer
+    cap_add:
+      - NET_ADMIN
+    stdin_open: true
+    tty: true
+
+networks:
+  # First network
+  network_a:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+
+  # Second network - peer will switch to this
+  network_b:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+          gateway: 172.21.0.1
