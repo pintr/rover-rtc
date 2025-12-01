@@ -1,182 +1,382 @@
-# Rust P2P Rover Communication Prototype
+# Rover RTC
 
-A Rust prototype for rover-to-rover communication using WebRTC data channels. It establishes a direct P2P link and is designed to perform seamless network handovers to maintain a resilient connection in changing network environments.
+A robust WebRTC-based peer-to-peer communication system built in Rust, designed for direct rover-to-rover communication with resilient network recovery capabilities.
 
-This project serves as a foundation for building robust, decentralized communication systems for mobile or embedded hardware.
+## Overview
 
----
+Rover RTC provides a complete WebRTC implementation featuring direct P2P data channels, automatic connection health monitoring, and network recovery mechanisms. The system is designed to maintain stable connections in dynamic network environments, making it suitable for mobile robotics, embedded systems, and other scenarios requiring reliable peer-to-peer communication.
 
-### Core Features
+## Architecture
 
-* **Direct P2P Communication:** Establishes a secure, end-to-end encrypted data channel between two peers using WebRTC.
-* **Handover-Ready Architecture:** Specifically designed to support seamless network handovers. The system can be extended to switch between network interfaces (e.g., Wi-Fi, Cellular, Ethernet) without dropping the connection by using the WebRTC ICE Restart mechanism.
-* **Lightweight & Controllable:** Built with [`str0m`](https://github.com/algesten/str0m), a minimal WebRTC implementation that gives the application direct control over network sockets, which is essential for the handover logic.
-* **Fully Asynchronous:** Uses the `tokio` runtime for efficient, non-blocking I/O, making it suitable for resource-constrained environments.
+The system consists of two main components:
 
----
+### Server
+An HTTP-based signaling server that:
+- Handles SDP offer/answer exchange between peers
+- Manages multiple concurrent WebRTC client connections
+- Monitors connection health and triggers automatic recovery
+- Relays UDP packets between connected clients
+- Broadcasts periodic status messages to all clients
 
-### How It Works
+### Peer
+A WebRTC client that:
+- Establishes direct P2P connections via the signaling server
+- Creates bidirectional data channels for communication
+- Handles complete ICE candidate negotiation
+- Supports network interface changes and reconnection
+- Processes real-time data exchange with other peers
 
-The system consists of two parts: a simple signaling server and the main rover client application.
+## Features
 
-1.  **Signaling Rendezvous:** The two rover clients connect to a WebSocket server. This server's only job is to act as a temporary message relay, helping the two peers find each other.
-2.  **WebRTC Negotiation:** The clients exchange session information (SDP offers/answers) and network addresses (ICE candidates) through the signaling server.
-3.  **P2P Connection:** Once negotiation is complete, `str0m` establishes a direct, encrypted UDP connection between the two rovers. The signaling server is no longer needed for communication.
-4.  **Data Exchange:** A reliable data channel is established over the P2P connection, allowing the rovers to exchange messages directly.
+### Core Capabilities
 
-The next development phase involves monitoring this P2P link's quality (latency, packet loss) to automatically trigger an ICE Restart for a network handover when the connection degrades.
+- **Direct P2P Communication**: Establishes secure, end-to-end encrypted data channels between peers using WebRTC
+- **Network Recovery**: Automatic detection and recovery from network failures using ICE restart mechanisms
+- **Connection Health Monitoring**: Tracks connection status, activity, and failures for each client
+- **Multi-Client Support**: Server can manage multiple simultaneous peer connections
+- **Lightweight & Efficient**: Built on str0m for minimal overhead and direct socket control
+- **Fully Asynchronous**: Leverages Tokio runtime for non-blocking I/O operations
 
----
+### Network Resilience
 
-### Technology Stack
+The system includes comprehensive network recovery mechanisms to maintain connections in unstable network conditions:
 
-* **WebRTC Implementation:** [`str0m`](https://github.com/algesten/str0m)
-* **Asynchronous Runtime:** [`tokio`](https://tokio.rs/)
-* **WebSocket Signaling:** [`tokio-tungstenite`](https://github.com/snapview/tokio-tungstenite)
-* **Serialization (JSON):** [`serde`](https://serde.rs/)
+#### Connection Health Monitoring
 
----
+- **Activity Tracking**: Records timestamps of last successful communication for each client
+- **Failure Detection**: Counts consecutive packet delivery failures
+- **Automatic Health Checks**: Periodic monitoring every 5 seconds to identify degraded connections
+- **Recovery Triggers**: Initiates recovery when no activity for >10 seconds with >3 consecutive failures
+- **Attempt Limiting**: Maximum 3 ICE restart attempts to prevent infinite recovery loops
 
-### How to Run the Prototype
+#### Graceful Degradation
 
-You will need three separate terminal windows.
+- **UDP Failure Tolerance**: Temporary packet send failures don't immediately disconnect clients
+- **Enhanced State Tracking**: Monitors all ICE connection state transitions (Checking, Connected, Disconnected)
+- **Transient Issue Handling**: Only disconnects when connection is explicitly closed, not on temporary problems
+- **Detailed Logging**: Comprehensive logging of connection health and recovery attempts
 
-1.  **Clone the Repository (if applicable):**
-    ```bash
-    git clone <your-repo-url>
-    cd <your-repo-directory>
-    ```
+#### Recovery Mechanisms
 
-2.  **Terminal 1: Start the Signaling Server**
-    This server simply relays messages between the two clients.
-    ```bash
-    cargo run --bin server
-    ```
-    *You should see a "Server listening on 127.0.0.1:3001" message.*
+The server implements automatic recovery through:
 
-3.  **Terminal 2: Start the First Rover (Offerer)**
-    This client will initiate the WebRTC offer.
-    ```bash
-    cargo run --main main_strom.rs -- offerer
-    ```
+- `ConnectionHealth` struct tracking activity, failures, and restart attempts
+- `check_client_health()` function for periodic health assessment
+- `attempt_connection_recovery()` for automatic ICE restart when connections degrade
+- Activity marking on successful polls and received packets
+- Failure marking when packets aren't accepted by any client
 
-4.  **Terminal 3: Start the Second Rover (Answerer)**
-    This client will wait for the offer and respond.
-    ```bash
-    cargo run --main main_strom.rs
-    ```
+Client-side recovery support:
 
-After the answerer starts, you will see logs in all terminals indicating that the connection is being established. Shortly after, the two rover clients will confirm that the data channel is open and will begin exchanging messages.
+- `add_new_candidate()` method to add new ICE candidates when network interfaces change
+- `create_ice_restart_offer()` to generate ICE restart offers for signaling
+- Enhanced event handling that tolerates temporary failures
 
----
+## Technology Stack
 
-### License
+- **WebRTC**: [str0m](https://github.com/algesten/str0m) 0.11.1 - Minimal WebRTC implementation with direct socket control
+- **HTTP Server**: [rouille](https://github.com/tomaka/rouille) 3.6.2 - Lightweight HTTP server for signaling
+- **Async Runtime**: [tokio](https://tokio.rs/) 1.48.0 - Asynchronous runtime for peer operations
+- **Serialization**: [serde_json](https://github.com/serde-rs/json) 1.0.145 - JSON serialization for SDP exchange
+- **HTTP Client**: [reqwest](https://github.com/seanmonstar/reqwest) 0.11.22 - Async HTTP client for signaling
+- **Logging**: [tracing](https://github.com/tokio-rs/tracing) 0.1.37 - Structured logging and diagnostics
+- **Binary Serialization**: [bincode](https://github.com/bincode-org/bincode) 2.0.1 - Efficient binary encoding
 
-This project is licensed under the **Apache License 2.0**.
+## Getting Started
 
----
+### Prerequisites
 
-## Sequence of Operations
+- Rust 1.56 or later
+- Cargo (comes with Rust)
 
-This section documents the flow of operations and key functions involved in establishing and maintaining WebRTC connections in the Rover RTC system.
+### Installation
 
-### Server Mode
+Clone the repository:
 
-When running as a server (`cargo run server`):
+```bash
+git clone https://github.com/pintr/rover-rtc.git
+cd rover-rtc
+```
 
-1. **Initialization** (`server::main`)
-   - Initialize logging with `init_log()`
-   - Select host address using `select_host_address()`
-   - Bind UDP socket on random port for WebRTC traffic
-   - Spawn background thread with `run()` function
-   - Start HTTP server on port 3000 for signaling
+### Running the System
 
-2. **Signaling** (`server::web_request`)
-   - Receive HTTP POST request with SDP offer from client
-   - Deserialize offer using `serde_json::from_reader()`
-   - Create new `Rtc` instance
-   - Add host candidate with `rtc.add_local_candidate()`
-   - Accept offer and generate answer with `rtc.sdp_api().accept_offer()`
-   - Send `Rtc` instance to main loop via channel
-   - Return SDP answer as JSON response
+You'll need two terminal windows to run a complete setup:
 
-3. **Client Management** (`server::run`)
-   - Poll channel for new clients with `spawn_new_client()`
-   - Wrap each `Rtc` in `Client` instance using `Client::new()`
-   - Remove disconnected clients with `clients.retain(|c| c.rtc.is_alive())`
-   - Broadcast messages every 5 seconds using `client.send_message()`
+#### Terminal 1: Start the Signaling Server
 
-4. **Event Loop** (`server::run`)
-   - Poll each client with `poll_client()` to get next timeout
-   - Read UDP socket with `read_socket_input()` using configurable timeout
-   - Demultiplex packets to clients with `client.accepts(&input)`
-   - Handle input with `client.handle_input()`
-   - Drive time forward with `Input::Timeout(now)`
+```bash
+cargo run server
+```
 
-5. **Client Output Handling** (`client::poll_output`)
-   - Poll RTC instance with `rtc.poll_output()`
-   - Handle output types with `handle_output()`:
-     - `Output::Transmit`: Send UDP packet via socket
-     - `Output::Timeout`: Return timeout instant
-     - `Output::Event`: Process WebRTC events
-   - Handle events:
-     - `Event::IceConnectionStateChange`: Monitor connection state
-     - `Event::ChannelOpen`: Store channel ID for messaging
-     - `Event::ChannelData`: Log received messages
+The server will:
+- Bind to a random UDP port for WebRTC traffic
+- Start an HTTP server on `0.0.0.0:3000` for signaling
+- Display the local address and port for connections
 
-### Peer Mode
+Expected output:
+```
+Bound UDP port: 192.168.1.100:54321
+Connect a browser to http://192.168.1.100:3000
+```
 
-When running as a peer (`cargo run peer`):
+#### Terminal 2: Start a Peer Client
 
-1. **Initialization** (`peer::main`)
-   - Initialize logging with `init_log()`
-   - Create new `Rtc` instance using `Rtc::new()`
-   - Bind UDP socket on port 0 (random)
-   - Discover local candidates with `get_candidates()`
-   - Add candidates with `rtc.add_local_candidate()`
+```bash
+cargo run peer
+```
 
-2. **Channel Creation**
-   - Get SDP API with `rtc.sdp_api()`
-   - Add data channel with `change.add_channel("test")`
-   - Apply changes and create offer with `change.apply()`
-   - Returns `(SdpOffer, SdpPending)`
+The peer will:
+- Create a WebRTC connection through the signaling server
+- Establish ICE candidates and negotiate the connection
+- Open a data channel named "test"
+- Begin exchanging messages once connected
 
-3. **Signaling Exchange**
-   - Serialize offer to JSON using `serde_json::to_string()`
-   - POST offer to server at `http://172.17.0.1:3000`
-   - Receive and deserialize answer as `SdpAnswer`
-   - Accept answer with `rtc.sdp_api().accept_answer()`
+Expected output:
+```
+Starting modern str0m peer...
+Offer SDP: [SDP details]
+Answer SDP: [SDP details]
+Event: IceConnectionStateChange(Connected)
+Event: ChannelOpen(ChannelId(0), "test")
+```
 
-4. **Connection Establishment Loop**
-   - Poll RTC for output with `rtc.poll_output()`
-   - Handle three output types:
-     - `Output::Timeout`: Wait until timeout instant
-     - `Output::Transmit`: Send UDP packet to destination
-     - `Output::Event`: Process connection events
-   - Set socket read timeout with `socket.set_read_timeout()`
-   - Read incoming UDP packets with `socket.recv_from()`
-   - Convert to `Input::Receive` with network details
-   - Drive state forward with `rtc.handle_input()`
+## Project Structure
 
-5. **ICE Connection States** (monitored via `Event::IceConnectionStateChange`)
-   - `IceConnectionState::New`: ICE starting
-   - `IceConnectionState::Checking`: Testing candidates
-   - `IceConnectionState::Connected`: Connection established
-   - `IceConnectionState::Completed`: ICE complete
-   - `IceConnectionState::Disconnected`: Connection lost (exit loop)
+```
+rover-rtc/
+├── src/
+│   ├── main.rs           # Entry point and command-line argument handling
+│   ├── server.rs         # WebRTC signaling server implementation
+│   ├── peer.rs           # WebRTC peer client implementation
+│   ├── model/
+│   │   ├── client.rs     # Client connection management
+│   │   ├── payload.rs    # Message payload structures
+│   │   ├── propagated.rs # Propagated message handling
+│   │   └── tracks.rs     # Media track management
+│   └── util/
+│       └── mod.rs        # Utility functions (logging, networking)
+├── Cargo.toml            # Project dependencies and metadata
+├── README.md             # This file
+└── LICENSE               # Apache License 2.0
+```
 
-6. **Data Channel Operations**
-   - Wait for `Event::ChannelOpen` with matching channel ID
-   - Receive data via `Event::ChannelData` events
-   - Send data using `channel.write()`
+## How It Works
 
-### Utility Functions
+### Connection Flow
 
-The following utility functions support the WebRTC operations:
+1. **Peer Initialization**: Peer creates an RTC instance, binds a UDP socket, and discovers local ICE candidates
+2. **Offer Generation**: Peer creates a data channel and generates an SDP offer containing connection parameters
+3. **Signaling Exchange**: Peer sends the offer to the signaling server via HTTP POST
+4. **Server Processing**: Server receives the offer, creates its own RTC instance, and generates an SDP answer
+5. **Answer Acceptance**: Peer receives the answer and completes the WebRTC negotiation
+6. **ICE Negotiation**: Peers exchange ICE candidates to find the best connection path
+7. **Connection Established**: Once ICE completes, a direct P2P UDP connection is established
+8. **Data Exchange**: The data channel opens, enabling bidirectional message exchange
 
-- **`util::select_host_address()`**: Discovers the first routable IPv4 address on the system by iterating through network interfaces and filtering out loopback, link-local, and broadcast addresses.
+### Health Monitoring and Recovery
 
-- **`util::get_candidates()`**: Generates a list of ICE host candidates for all available network interfaces (excluding loopback and link-local), each bound to the specified UDP socket port.
+The server implements a comprehensive connection health monitoring system that continuously tracks the state of all connected peers.
+
+#### Monitoring Process
+
+For each connected client, the server maintains a `ConnectionHealth` record containing:
+
+- **Last Activity Timestamp**: Updated on every successful packet exchange
+- **Consecutive Failures**: Incremented when packets fail to reach any client
+- **ICE Restart Attempts**: Counter tracking recovery attempts for this connection
+
+Every 5 seconds, the server runs `check_client_health()` which:
+
+1. Examines each client's health record
+2. Identifies connections meeting recovery criteria
+3. Initiates automatic recovery for degraded connections
+4. Cleans up health records for disconnected clients
+
+#### Recovery Criteria
+
+Automatic recovery is triggered when ALL conditions are met:
+
+- No activity for more than 10 seconds
+- More than 3 consecutive packet failures
+- Fewer than 3 previous restart attempts
+
+#### Recovery Process
+
+When triggered, `attempt_connection_recovery()` performs:
+
+1. Calls client's `add_new_candidate()` to refresh ICE candidates
+2. Increments the restart attempt counter
+3. Resets the consecutive failure count
+4. Logs the recovery attempt for monitoring
+
+The system automatically re-establishes connections through available network paths using ICE restart mechanisms, allowing peers to maintain connectivity despite network changes or temporary disruptions.
+
+#### Graceful Failure Handling
+
+The implementation includes several safeguards:
+
+- UDP send failures generate warnings but don't immediately kill connections
+- Only explicit connection closure triggers disconnection
+- Activity and failure counters provide objective health assessment
+- Maximum attempt limits prevent infinite recovery loops
+- Comprehensive logging enables debugging and monitoring
+
+## API Overview
+
+### Server Functions
+
+- `server::main()` - Initializes and runs the signaling server
+- `server::web_request()` - Handles HTTP signaling requests (SDP exchange)
+- `server::run()` - Main event loop managing multiple clients
+- `server::spawn_new_client()` - Creates new client instances from RTC connections
+- `server::poll_client()` - Processes client output and returns next timeout
+- `server::check_client_health()` - Periodic health monitoring of all clients
+
+### Peer Functions
+
+- `peer::main()` - Async entry point for peer client
+- Creates data channels with `rtc.sdp_api().add_channel()`
+- Generates offers with `change.apply()`
+- Handles connection events through `rtc.poll_output()`
+- Processes incoming data via `Event::ChannelData`
+
+### Client Management
+
+The `Client` struct (in `model/client.rs`) encapsulates:
+- Unique client identification
+- RTC instance management
+- Data channel state tracking
+- ICE connection monitoring
+- Message handling capabilities
+
+Key methods:
+- `Client::new()` - Creates a new client instance
+- `client.accepts()` - Checks if a packet belongs to this client
+- `client.handle_input()` - Processes incoming UDP packets
+- `client.poll_output()` - Drives the WebRTC state machine
+- `client.send_message()` - Sends data through the channel
+
+## Configuration
+
+### Server Configuration
+
+The server binds to:
+- UDP: Random port on the selected host address (for WebRTC traffic)
+- HTTP: Port 3000 on all interfaces (for signaling)
+
+To modify the HTTP port, edit `server.rs`:
+```rust
+let server = Server::new("0.0.0.0:3000", move |request| {
+    web_request(request, addr, tx.clone())
+})
+```
+
+### Peer Configuration
+
+The peer connects to the signaling server at `http://172.17.0.1:3000` by default. To change this, modify the URL in `peer.rs`:
+```rust
+let answer: SdpAnswer = client
+    .post("http://YOUR_SERVER_IP:3000")
+    .body(serde_json::to_string(&offer)?)
+    .send()
+    .await?
+    .json()
+    .await?;
+```
+
+### Logging
+
+Logging is configured via the `RUST_LOG` environment variable:
+
+```bash
+# Info level (default)
+RUST_LOG=info cargo run server
+
+# Debug level for detailed logs
+RUST_LOG=debug cargo run peer
+
+# Module-specific logging
+RUST_LOG=rover_rtc::peer=debug,rover_rtc::server=info cargo run server
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**Server fails to bind**
+- Ensure port 3000 is not already in use
+- Check firewall settings allow incoming connections
+
+**Peer cannot connect to server**
+- Verify the server IP address in `peer.rs` is correct
+- Ensure the server is running before starting the peer
+- Check network connectivity between peer and server
+
+**ICE connection fails**
+- Verify UDP traffic is not blocked by firewall
+- Check that NAT traversal is not required (current implementation uses host candidates only)
+- Review logs for ICE state changes using `RUST_LOG=debug`
+
+**Connection drops frequently**
+- Enable debug logging to see health monitoring in action
+- Check network stability and packet loss
+- Review ICE restart attempts in server logs
+
+## Development
+
+### Building from Source
+
+```bash
+# Build in debug mode
+cargo build
+
+# Build in release mode (optimized)
+cargo build --release
+
+# Run tests
+cargo test
+
+# Check code without building
+cargo check
+```
+
+### Code Structure
+
+- `main.rs` - CLI entry point and argument parsing
+- `server.rs` - Signaling server and client management (421 lines)
+- `peer.rs` - WebRTC peer client implementation (278 lines)
+- `model/client.rs` - Client abstraction for server-side connections (266 lines)
+- `model/payload.rs` - Message payload structures
+- `model/propagated.rs` - Propagated message handling
+- `model/tracks.rs` - Media track management
+- `util/mod.rs` - Utility functions for networking and logging
+
+## Future Enhancements
+
+- Support for TURN/STUN servers for NAT traversal
+- Multiple data channels per connection
+- Media track support (audio/video)
+- Enhanced metrics and monitoring dashboard
+- Automatic network interface switching
+- Connection quality metrics (RTT, packet loss)
+- Persistent storage of connection state
+- Web-based control panel
+
+## Contributing
+
+Contributions are welcome. Please ensure:
+- Code follows Rust idioms and formatting (`cargo fmt`)
+- All tests pass (`cargo test`)
+- New features include appropriate documentation
+- Commit messages are clear and descriptive
+
+## License
+
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+Built with [str0m](https://github.com/algesten/str0m), a minimal and powerful WebRTC implementation in Rust.
 
 - **`server::read_socket_input()`**: Attempts to read from the UDP socket with timeout handling, converting received data into `Input::Receive` events for the RTC state machine.
 
@@ -197,16 +397,16 @@ The following utility functions support the WebRTC operations:
 ```
 Peer                          Server                        Other Peers
  |                               |                               |
- |---(1) POST SDP Offer-------->|                               |
- |<--(2) Return SDP Answer------|                               |
+ |---(1) POST SDP Offer--------> |                               |
+ |<--(2) Return SDP Answer------ |                               |
  |                               |                               |
  |---(3) STUN/UDP packets------->|                               |
  |<--(4) STUN/UDP packets--------|                               |
  |                               |                               |
- |    (ICE Connection Established)                              |
+ | (ICE Connection Established)  |                               |
  |                               |                               |
  |---(5) Data Channel Open------>|                               |
- |<--(6) Data Channel Messages---|<---(7) Broadcast messages----|
+ |<--(6) Data Channel Messages---|<----(7) Broadcast messages----|
  |                               |                               |
 ```
 
