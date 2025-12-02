@@ -1,9 +1,16 @@
-target/
+# Exclude everything in target except the release binary
+target/*
+!target/release/
+target/release/*
+!target/release/rover-rtc
+
 .git/
 .gitignore
 *.md
 !README.md
-.dockerignore
 .env
 *.log
 .DS_Store
+
+# Don't exclude target for local builds
+# target/

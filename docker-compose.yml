@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # Signaling server - stays on a stable network
   server:

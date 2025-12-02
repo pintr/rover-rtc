@@ -19,10 +19,10 @@ show_network_status() {
     print_header "Current Network Status"
     
     echo -e "${YELLOW}Server networks:${NC}"
-    docker exec rover-server ip addr show | grep -E "inet |^[0-9]+: " | grep -v "127.0.0.1"
+    podman exec rover-server ip addr show | grep -E "inet |^[0-9]+: " | grep -v "127.0.0.1"
     
     echo -e "\n${YELLOW}Peer networks:${NC}"
-    docker exec rover-peer ip addr show | grep -E "inet |^[0-9]+: " | grep -v "127.0.0.1"
+    podman exec rover-peer ip addr show | grep -E "inet |^[0-9]+: " | grep -v "127.0.0.1"
     
     echo ""
 }
@@ -32,7 +32,7 @@ test_connectivity() {
     local target=$1
     echo -e "${YELLOW}Testing connectivity to $target...${NC}"
     
-    if docker exec rover-peer ping -c 2 -W 2 $target > /dev/null 2>&1; then
+    if podman exec rover-peer ping -c 2 -W 2 $target > /dev/null 2>&1; then
         echo -e "${GREEN}✓ Connectivity OK${NC}"
         return 0
     else
@@ -42,9 +42,9 @@ test_connectivity() {
 }
 
 # Check if containers are running
-if ! docker ps | grep -q rover-server || ! docker ps | grep -q rover-peer; then
+if ! podman ps | grep -q rover-server || ! podman ps | grep -q rover-peer; then
     echo -e "${RED}Error: Containers not running. Please start with:${NC}"
-    echo "  docker-compose up --build"
+    echo "  podman-compose up -d"
     exit 1
 fi
 
@@ -52,9 +52,9 @@ fi
 show_network_status
 
 # Get server IP on network_a
-SERVER_IP_A=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{if eq .NetworkID "'$(docker network inspect -f '{{.Id}}' rover-rtc_network_a)'"}}{{.IPAddress}}{{end}}{{end}}' rover-server)
+SERVER_IP_A=$(podman inspect -f '{{range .NetworkSettings.Networks}}{{if eq .NetworkID "'$(podman network inspect -f '{{.Id}}' rover-rtc_network_a)'"}}{{.IPAddress}}{{end}}{{end}}' rover-server)
 # Get server IP on network_b
-SERVER_IP_B=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{if eq .NetworkID "'$(docker network inspect -f '{{.Id}}' rover-rtc_network_b)'"}}{{.IPAddress}}{{end}}{{end}}' rover-server)
+SERVER_IP_B=$(podman inspect -f '{{range .NetworkSettings.Networks}}{{if eq .NetworkID "'$(podman network inspect -f '{{.Id}}' rover-rtc_network_b)'"}}{{.IPAddress}}{{end}}{{end}}' rover-server)
 
 echo -e "${BLUE}Server IPs:${NC}"
 echo -e "  Network A: ${GREEN}$SERVER_IP_A${NC}"
@@ -70,7 +70,7 @@ read
 
 # Disconnect from network_a
 print_header "Step 2: Disconnecting peer from Network A"
-docker network disconnect rover-rtc_network_a rover-peer
+podman network disconnect rover-rtc_network_a rover-peer
 echo -e "${GREEN}✓ Disconnected from Network A${NC}"
 sleep 2
 
@@ -83,7 +83,7 @@ read
 
 # Connect to network_b
 print_header "Step 3: Connecting peer to Network B"
-docker network connect rover-rtc_network_b rover-peer
+podman network connect rover-rtc_network_b rover-peer
 echo -e "${GREEN}✓ Connected to Network B${NC}"
 sleep 2
 
@@ -101,11 +101,11 @@ echo -e "${YELLOW}Press ENTER to switch back to Network A (optional)...${NC}"
 read
 
 print_header "Step 5: Switching back to Network A"
-docker network disconnect rover-rtc_network_b rover-peer
+podman network disconnect rover-rtc_network_b rover-peer
 echo -e "${GREEN}✓ Disconnected from Network B${NC}"
 sleep 1
 
-docker network connect rover-rtc_network_a rover-peer
+podman network connect rover-rtc_network_a rover-peer
 echo -e "${GREEN}✓ Connected back to Network A${NC}"
 sleep 2
 
@@ -116,6 +116,6 @@ test_connectivity $SERVER_IP_A
 
 echo -e "\n${GREEN}=== Test Complete ===${NC}"
 echo -e "\nUseful commands:"
-echo -e "  ${BLUE}docker logs -f rover-peer${NC}   - Follow peer logs"
-echo -e "  ${BLUE}docker logs -f rover-server${NC} - Follow server logs"
-echo -e "  ${BLUE}docker exec -it rover-peer bash${NC} - Shell into peer container"
+echo -e "  ${BLUE}podman logs -f rover-peer${NC}   - Follow peer logs"
+echo -e "  ${BLUE}podman logs -f rover-server${NC} - Follow server logs"
+echo -e "  ${BLUE}podman exec -it rover-peer bash${NC} - Shell into peer container"

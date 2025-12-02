@@ -11,9 +11,9 @@ NC='\033[0m'
 echo -e "${BLUE}=== Rapid Network Switching Test ===${NC}\n"
 
 # Check if containers are running
-if ! docker ps | grep -q rover-server || ! docker ps | grep -q rover-peer; then
+if ! podman ps | grep -q rover-server || ! podman ps | grep -q rover-peer; then
     echo -e "${RED}Error: Containers not running. Please start with:${NC}"
-    echo "  docker-compose up --build"
+    echo "  podman-compose up --build"
     exit 1
 fi
 
@@ -30,8 +30,8 @@ for ((i=1; i<=$CYCLES; i++)); do
     
     # Switch to Network B
     echo -e "${YELLOW}[$i] Switching to Network B...${NC}"
-    docker network disconnect rover-rtc_network_a rover-peer 2>/dev/null
-    docker network connect rover-rtc_network_b rover-peer 2>/dev/null
+    podman network disconnect rover-rtc_network_a rover-peer 2>/dev/null
+    podman network connect rover-rtc_network_b rover-peer 2>/dev/null
     echo -e "${GREEN}[$i] On Network B${NC}"
     
     # Wait
@@ -43,8 +43,8 @@ for ((i=1; i<=$CYCLES; i++)); do
     
     # Switch to Network A
     echo -e "${YELLOW}[$i] Switching to Network A...${NC}"
-    docker network disconnect rover-rtc_network_b rover-peer 2>/dev/null
-    docker network connect rover-rtc_network_a rover-peer 2>/dev/null
+    podman network disconnect rover-rtc_network_b rover-peer 2>/dev/null
+    podman network connect rover-rtc_network_a rover-peer 2>/dev/null
     echo -e "${GREEN}[$i] On Network A${NC}"
     
     # Wait (except on last cycle)
@@ -59,4 +59,4 @@ done
 
 echo -e "\n${GREEN}=== Test Complete ===${NC}"
 echo -e "Switched networks ${CYCLES} times."
-echo -e "Check logs with: ${BLUE}docker logs rover-peer${NC}\n"
+echo -e "Check logs with: ${BLUE}podman logs rover-peer${NC}\n"
